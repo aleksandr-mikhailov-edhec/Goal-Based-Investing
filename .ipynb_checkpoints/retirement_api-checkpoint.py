@@ -17,9 +17,9 @@ def market_simulation(
     v0=(0.2138)**2, # Initial variance (square of initial volatility)
     
     # Short-rate (Vasicek) model parameters
-    #lt_r=0.0306,    # Long-term mean (b in Vasicek) to which r reverts
-    #kappa_r=0.13,   # Mean-reversion speed for short rate
-    #sigma_r=0.98/100, # Volatility (std dev) of short rate’s diffusion
+    lt_r=0.0306,    # Long-term mean (b in Vasicek) to which r reverts
+    kappa_r=0.13,   # Mean-reversion speed for short rate
+    sigma_r=0.98/100, # Volatility (std dev) of short rate’s diffusion
     
     # Sharpe-ratio (Ornstein–Uhlenbeck type) model parameters
     lt_sr=0.4,     # Long-term mean Sharpe ratio
@@ -174,16 +174,76 @@ def market_simulation(
                  + sigma_sr * np.sqrt(dt) * Z[i-1,:,2])
 
         # -- Update Short Rate (Vasicek) --
-        #r[i] = (r[i-1]
-        #        + kappa_r*(lt_r - r[i-1]) * dt
-        #        + sigma_r * np.sqrt(dt) * Z[i-1,:,3])
+        r[i] = (r[i-1]
+                + kappa_r*(lt_r - r[i-1]) * dt
+                + sigma_r * np.sqrt(dt) * Z[i-1,:,3])
 
     # Optional: Quick diagnostic check
     if np.sum(v < 0) > 0:
         print("Warning! Some variance values became negative (after truncation).")
-    
-    return S, v, sr#, r
+        
+    S = pd.DataFrame(S, index = np.linspace(0,T, len(S)))
+    v = pd.DataFrame(v, index = np.linspace(0,T, len(S)))
+    sr =pd.DataFrame(sr, index = np.linspace(0,T, len(S)))
+    r = pd.DataFrame(r, index = np.linspace(0,T, len(S)))
+    return S, v, sr, r
 
+
+# Function for Vasicek Zero-Coupon Bond (ZCB) Price
+def vasicek_zcb_price(r_t, tau=3, kappa_r=0.13, lt_r=0.0306, sigma_r=0.015):
+    """
+    Computes the price P(t, t+tau) of a zero-coupon bond under the Vasicek model.
+
+    Parameters:
+    - r_t: Short rate at time t
+    - tau: Time to maturity in years (default = 3 years)
+    - kappa_r: Mean reversion speed of the short rate process
+    - lt_r: Long-term mean interest rate (theta in Vasicek model)
+    - sigma_r: Volatility of interest rate
+
+    Returns:
+    - Price of the zero-coupon bond P(t, t+tau)
+    """
+    
+    # Compute B(t, T) factor in Vasicek model
+    B = (1.0 - np.exp(-kappa_r * tau)) / kappa_r
+
+    # Compute A(t, T) factor in Vasicek model
+    A_term1 = (lt_r - (sigma_r**2) / (2.0 * kappa_r**2)) * (B - tau)
+    A_term2 = (sigma_r**2) / (4.0 * kappa_r) * B**2
+    A = A_term1 - A_term2
+
+    # Compute bond price using Vasicek formula
+    return np.exp(-A - B * r_t)
+    
+def deduce_bond_index(zero_coupon_prices, r_p, dt, initial_investment=100):
+    """
+    Computes a constant maturity bond index based on zero-coupon bond prices and short-term interest rates.
+
+    Parameters:
+    zero_coupon_prices (DataFrame): Zero-coupon bond prices for different maturities over time.
+    r_p (Series or DataFrame): Short-term interest rates (or bond yields).
+    dt (float): Time step size.
+    initial_investment (float, optional): Initial investment amount. Default is 100.
+
+    Returns:
+    DataFrame: Computed bond index values.
+    """
+    
+    # Compute the return from changes in zero-coupon bond prices
+    return_from_change_in_bond_price = zero_coupon_prices.pct_change().fillna(0)
+
+    # Include the dt factor explicitly
+    return_from_coupons = r_p * dt  # Keeps dt in formula
+
+    # Compute total return index
+    index_return = return_from_coupons + return_from_change_in_bond_price
+
+    # Compute bond index, scaling by initial investment
+    bond_index = initial_investment * (index_return+1).cumprod()
+
+    return bond_index
+    
 def generate_equal_consumption_streams(
     accumulation_period_length=10,    # Number of years (periods) you are saving money
     cash_flows_accumulation=0,       # Annual cash flow during accumulation (e.g., how much is contributed/saved)
