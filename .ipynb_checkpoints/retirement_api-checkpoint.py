@@ -1,288 +1,479 @@
-# This file contains functions developed in other notebooks
-
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
+from joblib import Parallel, delayed
 
-def market_simulation(
-    # Basic notations
-    T,        # Total time in years for the simulation
-    N,        # Number of discrete time steps; e.g., 252 for "trading days" in a year
-    M,        # Number of simulation paths (scenarios)
-    seed=123, # Random seed for reproducibility
-    
-    # Initial conditions
-    S0=1,         # Initial stock price
-    r0=0.0306,    # Initial short rate
-    sr0=0.4,      # Initial Sharpe ratio
-    v0=(0.2138)**2, # Initial variance (square of initial volatility)
-    
-    # Short-rate (Vasicek) model parameters
-    lt_r=0.0306,    # Long-term mean (b in Vasicek) to which r reverts
-    kappa_r=0.13,   # Mean-reversion speed for short rate
-    sigma_r=0.98/100, # Volatility (std dev) of short rate’s diffusion
-    
-    # Sharpe-ratio (Ornstein–Uhlenbeck type) model parameters
-    lt_sr=0.4,     # Long-term mean Sharpe ratio
-    kappa_sr=0.35, # Mean-reversion speed for Sharpe ratio
-    sigma_sr=0.2322, # Volatility (std dev) of Sharpe ratio process
-    
-    # Variance (Heston-like) model parameters
-    kappa_variance=5.07,  # Mean-reversion speed of variance process
-    lt_variance=(0.2138)**2, # Long-term mean of variance process
-    sigma_variance=0.48,  # Vol of vol (volatility of variance process)
-    
-    # Correlations for covariance matrix
-    # (Z is 4D, representing Brownian increments for: stock, variance, Sharpe ratio, short rate)
-    rho_stock_volatility=-0.767, # Corr( dW_stock, dW_vol ) 
-    rho_stock_sr=-0.2,           # Corr( dW_stock, dW_sr   )
-    rho_volatility_sr=+0.767          # Corr( dW_vol,   dW_sr   )
-):
-    """
-    Simulates multiple paths (M scenarios) of four stochastic processes over (N+1) time points:
-      1. Stock price (S) following a log-Euler scheme with drift = (r + SR*sqrt(v) - 0.5*v)
-      2. Variance (v) in a mean-reverting "Heston-like" process
-      3. Sharpe ratio (sr) in an OU-style mean-reverting process
-      4. Short rate (r) in a standard Vasicek model
-
-    Underlying time steps: T (years) / N steps => dt = T/N
-
-    The correlations among the Brownian increments are given by 'cov'.
-
-    Parameters
-    ----------
-    T : float
-        Total simulation horizon in years.
-    N : int
-        Number of discrete time steps.
-    M : int
-        Number of simulation paths/scenarios.
-    seed : int, optional
-        Random seed for reproducibility. Default = 123.
-    S0 : float, optional
-        Initial stock price.
-    r0 : float, optional
-        Initial short rate.
-    sr0 : float, optional
-        Initial Sharpe ratio.
-    v0 : float, optional
-        Initial variance. (Square of initial volatility)
-    lt_r : float, optional
-        Long-term mean for Vasicek short rate.
-    kappa_r : float, optional
-        Mean-reversion speed for short rate.
-    sigma_r : float, optional
-        Volatility parameter for short rate.
-    lt_sr : float, optional
-        Long-term mean for Sharpe ratio.
-    kappa_sr : float, optional
-        Mean-reversion speed for Sharpe ratio.
-    sigma_sr : float, optional
-        Volatility parameter for Sharpe ratio.
-    kappa_variance : float, optional
-        Mean-reversion speed for the variance process.
-    lt_variance : float, optional
-        Long-term mean for the variance process.
-    sigma_variance : float, optional
-        Volatility of the variance process (aka vol-of-vol).
-    rho_stock_volatility : float, optional
-        Correlation between the stock’s Brownian increment and the variance’s Brownian increment.
-    rho_stock_sr : float, optional
-        Correlation between the stock’s Brownian increment and the Sharpe ratio’s Brownian increment.
-    rho_volatility_sr : float, optional
-        Correlation between the variance’s Brownian increment and the Sharpe ratio’s Brownian increment.
-
-    Returns
-    -------
-    (S, v, sr, r) : tuple of np.ndarray
-        Each is an array of shape ((N+1), M):
-            S[i, :] -> stock price at time step i for each of the M paths
-            v[i, :] -> variance at time step i
-            sr[i, :] -> Sharpe ratio at time step i
-            r[i, :] -> short rate at time step i
-
-    Notes
-    -----
-    - The code uses an exponential Euler scheme for the stock price: 
-        S_{t+1} = S_t * exp( (r_t + sr_t * sqrt(v_t) - 0.5*v_t)*dt + sqrt(v_t*dt)*Z_{t,0} )
-      This is a mix of a risk-free rate + Sharpe ratio drift approach. 
-      (Under a strict risk-neutral Heston, you'd typically have just r_t - 0.5*v_t).
-    - The variance v follows a mean-reverting square-root process (though not exactly the classic Heston if we omit the sqrt(v) in the drift).
-    - The Sharpe ratio sr is an OU process with speed kappa_sr, mean lt_sr, vol sigma_sr.
-    - The short rate r is a Vasicek process with speed kappa_r, mean lt_r, vol sigma_r.
-    - The correlation matrix has 4 dimensions: [dW_stock, dW_vol, dW_sr, dW_r].
-      We set Corr( dW_r, anything ) = 0 here. 
-      If the final matrix is not positive semi-definite, you may get a runtime warning or numeric issues.
-
-    Example usage:
-    -------------
-    S, v, sr, r = market_simulation(
-        T=1.0, N=252, M=10000, seed=42,
-        rho_stock_volatility=-0.7, rho_stock_sr=-0.2
-    )
-    """
-
-    # Time step size in years
-    dt = T / N
-    
-    # Mean (0-vector) and covariance matrix for Brownian increments
-    mu = np.array([0, 0, 0, 0])
-    cov = np.array([
-        [1,                    rho_stock_volatility,  rho_stock_sr,     0],
-        [rho_stock_volatility, 1,                     rho_volatility_sr,0],
-        [rho_stock_sr,         rho_volatility_sr,     1,                0],
-        [0,                    0,                     0,                1]
-    ])
-
-    # Initialize paths
-    # (N+1) time points (including t=0), M scenarios
-    S = np.full(shape=(N+1, M), fill_value=S0)  # stock
-    v = np.full(shape=(N+1, M), fill_value=v0)  # variance
-    sr = np.full(shape=(N+1, M), fill_value=sr0)# Sharpe ratio
-    r = np.full(shape=(N+1, M), fill_value=r0)  # short rate
-    
-    # Draw correlated Brownian increments (Z) under the chosen measure
-    # Z.shape = (N, M, 4) => For each time step, we have M sets of 4 correlated draws
-    np.random.seed(seed)
-    Z = np.random.multivariate_normal(mu, cov, size=(N, M))
-
-    # Main simulation loop
-    for i in range(1, N+1):
-        # For notation convenience:
-        #   i-1: previous time index
-        #   Z[i-1,:,0]: Brownian increments for the stock
-        #   Z[i-1,:,1]: Brownian increments for the variance
-        #   Z[i-1,:,2]: Brownian increments for the Sharpe ratio
-        #   Z[i-1,:,3]: Brownian increments for the short rate
+class MarketSimulator:
+    def __init__(
+        self, 
+        # Basic notations
+        T,        # Total time in years for the simulation
+        N,        # Number of discrete time steps; e.g., 252 for "trading days" in a year
+        M,        # Number of simulation paths (scenarios)
+        seed=123, # Random seed for reproducibility
         
-        # -- Update Stock Price (exponential Euler) --
-        S[i] = S[i-1] * np.exp(
-            (r[i-1] + sr[i-1] * np.sqrt(v[i-1]) - 0.5*v[i-1]) * dt
-            + np.sqrt(v[i-1] * dt) * Z[i-1,:,0]
-        )
+        # Initial conditions
+        S0=1,         # Initial stock price
+        r0=0.15 / 100,      # Initial short rate
+        sr0=0.4,      # Initial Sharpe ratio
+        v0=(0.2138)**2, # Initial variance (square of initial volatility)
         
-        # -- Update Variance (Heston-like mean reverting) --
-        v[i] = (v[i-1]
-                + kappa_variance * (lt_variance - v[i-1]) * dt
-                + sigma_variance * np.sqrt(v[i-1]) * np.sqrt(dt) * Z[i-1,:,1])
+        # Short-rate (Vasicek) model parameters
+        lt_r=0.0306,    # Long-term mean (b in Vasicek) to which r reverts
+        kappa_r=0.13,   # Mean-reversion speed for short rate
+        sigma_r=0.98/100, # Volatility (std dev) of short rate’s diffusion
+        lambda_r=-53/100/100, # Market price of risk associated with interest rate movements
         
-        # Enforce non-negative variance
-        v[i] = np.maximum(v[i], 0)
+        # Sharpe-ratio (Ornstein–Uhlenbeck type) model parameters
+        lt_sr=0.4,     # Long-term mean Sharpe ratio
+        kappa_sr=0.35, # Mean-reversion speed for Sharpe ratio
+        sigma_sr=0.2322, # Volatility (std dev) of Sharpe ratio process
         
-        # -- Update Sharpe Ratio (OU process) --
-        sr[i] = (sr[i-1]
-                 + kappa_sr*(lt_sr - sr[i-1]) * dt
-                 + sigma_sr * np.sqrt(dt) * Z[i-1,:,2])
-
-        # -- Update Short Rate (Vasicek) --
-        r[i] = (r[i-1]
-                + kappa_r*(lt_r - r[i-1]) * dt
-                + sigma_r * np.sqrt(dt) * Z[i-1,:,3])
-
-    # Optional: Quick diagnostic check
-    if np.sum(v < 0) > 0:
-        print("Warning! Some variance values became negative (after truncation).")
+        # Variance (Heston-like) model parameters
+        kappa_variance=5.07,  # Mean-reversion speed of variance process
+        lt_variance=(0.2138)**2, # Long-term mean of variance process
+        sigma_variance=0.48,  # Vol of vol (volatility of variance process)
         
-    S = pd.DataFrame(S, index = np.linspace(0,T, len(S)))
-    v = pd.DataFrame(v, index = np.linspace(0,T, len(S)))
-    sr =pd.DataFrame(sr, index = np.linspace(0,T, len(S)))
-    r = pd.DataFrame(r, index = np.linspace(0,T, len(S)))
-    return S, v, sr, r
+        # Correlations for covariance matrix
+        # (Z is 4D, representing Brownian increments for: stock, variance, Sharpe ratio, short rate)
+        rho_stock_volatility=-0.767, # Corr( dW_stock, dW_vol ) 
+        rho_stock_sr=-0.2,           # Corr( dW_stock, dW_sr   )
+        rho_volatility_sr=+0.767,    # Corr( dW_vol,   dW_sr   )
 
-
-# Function for Vasicek Zero-Coupon Bond (ZCB) Price
-def vasicek_zcb_price(r_t, tau=3, kappa_r=0.13, lt_r=0.0306, sigma_r=0.015):
-    """
-    Computes the price P(t, t+tau) of a zero-coupon bond under the Vasicek model.
-
-    Parameters:
-    - r_t: Short rate at time t
-    - tau: Time to maturity in years (default = 3 years)
-    - kappa_r: Mean reversion speed of the short rate process
-    - lt_r: Long-term mean interest rate (theta in Vasicek model)
-    - sigma_r: Volatility of interest rate
-
-    Returns:
-    - Price of the zero-coupon bond P(t, t+tau)
-    """
-    
-    # Compute B(t, T) factor in Vasicek model
-    B = (1.0 - np.exp(-kappa_r * tau)) / kappa_r
-
-    # Compute A(t, T) factor in Vasicek model
-    A_term1 = (lt_r - (sigma_r**2) / (2.0 * kappa_r**2)) * (B - tau)
-    A_term2 = (sigma_r**2) / (4.0 * kappa_r) * B**2
-    A = A_term1 - A_term2
-
-    # Compute bond price using Vasicek formula
-    return np.exp(-A - B * r_t)
-    
-def deduce_bond_index(zero_coupon_prices, r_p, dt, initial_investment=100):
-    """
-    Computes a constant maturity bond index based on zero-coupon bond prices and short-term interest rates.
-
-    Parameters:
-    zero_coupon_prices (DataFrame): Zero-coupon bond prices for different maturities over time.
-    r_p (Series or DataFrame): Short-term interest rates (or bond yields).
-    dt (float): Time step size.
-    initial_investment (float, optional): Initial investment amount. Default is 100.
-
-    Returns:
-    DataFrame: Computed bond index values.
-    """
-    
-    # Compute the return from changes in zero-coupon bond prices
-    return_from_change_in_bond_price = zero_coupon_prices.pct_change().fillna(0)
-
-    # Include the dt factor explicitly
-    return_from_coupons = r_p * dt  # Keeps dt in formula
-
-    # Compute total return index
-    index_return = return_from_coupons + return_from_change_in_bond_price
-
-    # Compute bond index, scaling by initial investment
-    bond_index = initial_investment * (index_return+1).cumprod()
-
-    return bond_index
-    
-def generate_equal_consumption_streams(
-    accumulation_period_length=10,    # Number of years (periods) you are saving money
-    cash_flows_accumulation=0,       # Annual cash flow during accumulation (e.g., how much is contributed/saved)
-    decumulation_period_lenth=20,    # Number of years (periods) you are withdrawing money
-    cash_flows_decumulation=-20000,  # Annual cash flow during decumulation (e.g., how much is withdrawn per year)
-    inflation_rate=0.02              # Annual inflation rate (2% by default)
+        # Constant maturity bond index set up
+        tau = 3, # Time to maturity in years of the bond index (default = 3 years)
+        B0 = 1   # Initial price of the bond index
     ):
-    """
-    Generates a DataFrame of cash flows across accumulation and decumulation periods,
-    including inflation adjustments.
+        """Initializes the Market Simulator with all parameters."""
+        
+        # Simulation settings
+        self.T, self.N, self.M, self.seed = T, N, M, seed  # Total time horizon, number of time steps, number of paths, random seed
+        
+        # Initial values
+        self.S0, self.r0, self.sr0, self.v0 = S0, r0, sr0, v0  # Initial values for stock price, short rate, Sharpe ratio, and variance
+        
+        # Short-rate (Vasicek) model parameters
+        self.lt_r, self.kappa_r, self.sigma_r, self.lambda_r = lt_r, kappa_r, sigma_r, lambda_r  # Long-term mean, mean reversion speed, volatility, and market price of risk
+        
+        # Sharpe-ratio (Ornstein–Uhlenbeck type) model parameters
+        self.lt_sr, self.kappa_sr, self.sigma_sr = lt_sr, kappa_sr, sigma_sr  # Long-term mean, mean reversion speed, and volatility of Sharpe ratio
+        
+        # Variance (Heston-like) model parameters
+        self.kappa_variance, self.lt_variance, self.sigma_variance = kappa_variance, lt_variance, sigma_variance  # Mean reversion speed, long-term mean, and vol of vol
+        
+        # Correlations for covariance matrix
+        self.rho_stock_volatility, self.rho_stock_sr, self.rho_volatility_sr = rho_stock_volatility, rho_stock_sr, rho_volatility_sr  # Correlation among Brownian motions
+        
+        # Time step size in years
+        self.dt = T / N  # Compute dt from total time and number of steps
+        
+        # Set up risk-neutral under Q measure long-term short rate
+        self.lt_r_q = lt_r + sigma_r * lambda_r / kappa_r  # Adjusted long-term mean for risk-neutral valuation
 
-    Returns:
-        pandas.DataFrame with columns:
-            - 'pure_CFs': The nominal cash flows (without considering inflation)
-            - 'accumulated_inflation': The inflation growth factor over each period
-            - 'inflation_adjusted_CFs': The real value of the cash flow in today's dollars
-    """
+        # generate the market paths
+        self.generate_paths()
 
-    # Create a single array of cash flows:
-    #   - 'accumulation_period_length' times 'cash_flows_accumulation' for the saving phase
-    #   - 'decumulation_period_lenth' times 'cash_flows_decumulation' for the withdrawal phase
-    cash_flows = np.array(
-        [cash_flows_accumulation] * accumulation_period_length +
-        [cash_flows_decumulation] * decumulation_period_lenth
-    )
+        # set up constant maturity bond index
+        self.tau = tau 
+        self.B0 = B0
+        
+        zero_coupon_bond_prices_for_constant_maturity_bond_index = self.vasicek_zcb_price(self.r_p, self.tau)
+        
+        # find price of constant maturity bond index
+        self.B_p = self.deduce_constant_maturity_bond_index(zero_coupon_bond_prices_for_constant_maturity_bond_index)
 
-    # Create a time index (1 to total number of periods)
-    dates = np.arange(1, accumulation_period_length + decumulation_period_lenth + 1, 1)
+        # set the retirement bond price to nothing. To initialize it run "self.calculate_perfect_retirement_bond(client)"
+        # where client comes from 'RetirementClient' class
+        self.retirement_bond_p2 = pd.DataFrame(index = self.r_p.index)
+        
+    def generate_paths(self):
+        """Simulates multiple paths of stock price, variance, Sharpe ratio, and short rate."""
+        np.random.seed(self.seed)  # Set random seed for reproducibility
+        
+        # Mean (0-vector) and covariance matrix for Brownian increments
+        mu = np.array([0, 0, 0, 0])  # Zero mean for Brownian motion
+        cov = np.array([
+            [1, self.rho_stock_volatility, self.rho_stock_sr, 0],  # Correlation matrix for Brownian motions
+            [self.rho_stock_volatility, 1, self.rho_volatility_sr, 0],
+            [self.rho_stock_sr, self.rho_volatility_sr, 1, 0],
+            [0, 0, 0, 1]  # Independent short rate process
+        ])
+        
+        # Initialize paths
+        S = np.full((self.N+1, self.M), self.S0)  # Stock price paths
+        v = np.full((self.N+1, self.M), self.v0)  # Variance paths
+        sr = np.full((self.N+1, self.M), self.sr0)  # Sharpe ratio paths
+        r = np.full((self.N+1, self.M), self.r0)  # Short rate paths
+        
+        # Generate correlated Brownian increments
+        Z = np.random.multivariate_normal(mu, cov, size=(self.N, self.M))
+        
+        # Main simulation loop
+        for i in range(1, self.N+1):
+            # Stock price evolution using exponential Euler scheme
+            S[i] = S[i-1] * np.exp((r[i-1] + sr[i-1] * np.sqrt(v[i-1]) - 0.5 * v[i-1]) * self.dt + np.sqrt(v[i-1] * self.dt) * Z[i-1,:,0])
+            
+            # Variance follows a mean-reverting Heston-like process
+            v[i] = np.maximum(v[i-1] + self.kappa_variance * (self.lt_variance - v[i-1]) * self.dt + self.sigma_variance * np.sqrt(v[i-1]) * np.sqrt(self.dt) * Z[i-1,:,1], 0)
+            
+            # Sharpe ratio follows an Ornstein–Uhlenbeck process
+            sr[i] = sr[i-1] + self.kappa_sr * (self.lt_sr - sr[i-1]) * self.dt + self.sigma_sr * np.sqrt(self.dt) * Z[i-1,:,2]
+            
+            # Short rate follows a Vasicek model under the risk-neutral measure
+            r[i] = r[i-1] + self.kappa_r * (self.lt_r_q - r[i-1]) * self.dt + self.sigma_r * np.sqrt(self.dt) * Z[i-1,:,3]
+        
+        # Convert outputs to DataFrame with time index
+
+        self.S_p = pd.DataFrame(S, index=np.linspace(0, self.T, len(S)))
+        self.v_p = pd.DataFrame(v, index=np.linspace(0, self.T, len(S)))
+        self.sr_p = pd.DataFrame(sr, index=np.linspace(0, self.T, len(S)))
+        self.r_p = pd.DataFrame(r, index=np.linspace(0, self.T, len(S)))
+
+    def vasicek_zcb_price(self, r_t, tau):
+        """
+        Computes the price P(t, t+tau) of a zero-coupon bond under the Vasicek model.
     
-    # Build a DataFrame with a column 'pure_CFs' representing the nominal cash flows
-    cash_flows_df = pd.DataFrame(cash_flows, columns=['pure_CFs'], index=dates)
+        Parameters:
+        - r_t: Short rate at time t
+        - tau: Time to maturity in years (default = 3 years)
+    
+        Returns:
+        - Price of the zero-coupon bond P(t, t+tau)
+        """
+        # Compute B(t, T) factor in Vasicek model
+        B = (1.0 - np.exp(-self.kappa_r * tau)) / self.kappa_r
+    
+        # Compute A(t, T) factor in Vasicek model
+        A_term1 = (self.lt_r_q - (self.sigma_r**2) / (2.0 * self.kappa_r**2)) * (B - tau)
+        A_term2 = (self.sigma_r**2) / (4.0 * self.kappa_r) * B**2
+        A = np.exp(A_term1 - A_term2)  # Fixed: Applied exponentiation as per formula
+    
+        # Compute bond price using Vasicek formula
+        return A * np.exp(-B * r_t)
 
-    # For each period, calculate the accumulated inflation growth factor:
-    # (1 + inflation_rate) ^ date_index
-    cash_flows_df['accumulated_inflation'] = (inflation_rate + 1) ** dates
+    def vasicek_zcb_yield(self, tau):
+        """
+        Computes the price P(t, t+tau) yeild curve of a zero-coupon bond under the Vasicek model.
+    
+        Parameters:
+        - r_t: Short rate at time t
+        - tau: Time to maturity in years (default = 3 years)
+    
+        Returns:
+        - Yield curve of bond P(t, t+tau)
+        """
+        # Compute B(t, T) factor in Vasicek model
+        B = (1.0 - np.exp(-self.kappa_r * self.tau)) / self.kappa_r
+    
+        # Compute A(t, T) factor in Vasicek model
+        A_term1 = (self.lt_r_q - (self.sigma_r**2) / (2.0 * self.kappa_r**2)) * (B - tau)
+        A_term2 = (self.sigma_r**2) / (4.0 * self.kappa_r) * B**2
+        A = np.exp(A_term1 - A_term2)  # Fixed: Applied exponentiation as per formula
+    
+        # Compute bond price using Vasicek formula
+        return -np.log(A * np.exp(-B * self.r_p))/tau
+    
+    def deduce_constant_maturity_bond_index(self, zero_coupon_prices):
+        """
+        Computes a constant maturity bond index based on zero-coupon bond prices and short-term interest rates.
+    
+        Parameters:
+        zero_coupon_prices (DataFrame): Zero-coupon bond prices for different maturities over time.
+        r_p (Series or DataFrame): Short-term interest rates (or bond yields).
+        dt (float): Time step size.
+        initial_investment (float, optional): Initial investment amount. Default is 100.
+    
+        Returns:
+        DataFrame: Computed bond index values.
+        """
+        
+        # Compute the return from changes in zero-coupon bond prices
+        return_from_change_in_bond_price = zero_coupon_prices.pct_change().fillna(0)
+    
+        # Include the dt factor explicitly
+        return_from_coupons = self.r_p * self.dt  # Keeps dt in formula
+    
+        # Compute total return index
+        index_return = return_from_coupons + return_from_change_in_bond_price
+    
+        # Compute bond index, scaling by initial investment
+        bond_index = self.B0 * (index_return+1).cumprod()
+    
+        return bond_index
 
-    # Multiply nominal cash flows by the inflation factor to get inflation-adjusted flows
-    cash_flows_df['inflation_adjusted_CFs'] = (
-        cash_flows_df['accumulated_inflation'] * cash_flows_df['pure_CFs']
-    )
+    
 
-    return cash_flows_df
+    def calculate_perfect_retirement_bond1(self, 
+                                          client):
+        """
+        This function calculates price of the perfect retirement bond 
+        given the market conditions.
+
+        Essentially it calculates zc bond matrix for each scenario and 
+        finds present value of the cash flows. these PVs are the perfect
+        discounted values of CFs = perfect retirement bond. The least 
+        risky asset that allows to reach the goal with certain probability
+
+        Parameters:
+        client (Class): A client initialized through the class "RetirementClient"
+                        They should have views on their CFs + periodociy
+                        periodicity is used for initializing cash flows more often
+                        ### IMPORTANT ### Higher periodicity makes this code slower,
+
+        Returns:
+        df_pv_retirement_bonds (DataFrame): retirement bond price
+        
+        """
+
+        retirement_bond_p = pd.DataFrame(index = self.r_p.index)
+                              
+        for simulation_number in tqdm(self.r_p.columns):
+            
+            # Step 1. Initialization
+            # initialize CFs. It is crucial to do in in-cycle, because this df will be changed
+            CFs = client.cash_flows_df
+            # simulated short term rates for 1 scenario for the market
+            r_p_short_term = self.r_p.loc[:,simulation_number]
+            # this periodicity will be used to shift CFs (to calculate present values)
+            periodicity_of_CF_shift = 1 / client.periodicity
+        
+            # Step 2. ZC matrix
+            # calculate matrix of zc bond prices for all maturities and all effective dates
+            # it is calculated using simulated short term rates and vasicek zc bond price
+            zc_bond_prices_dict = {}
+            for period in CFs.index:
+                zc_bond_prices_dict[period] = self.vasicek_zcb_price(r_p_short_term, tau=period)
+            zc_bond_prices = pd.DataFrame.from_dict(zc_bond_prices_dict, orient='index').T
+        
+        
+            # Step 3. Find all PVs of the client cash flows
+            # The task is to gather PVs of the future cash flows at each period of time
+            # This is a price of perfect GHP, maurity bond
+            
+            PVs = []
+            current_period = 0
+            
+            # to find these PVs I would need to iterate through each effective date as if I was there
+            for period in zc_bond_prices.index:
+            
+                # for each of the dates I find the PV of those future CFs using the constructed table
+                discounted_CFs = CFs['Pure_Cash_Flow'] * zc_bond_prices.loc[period,:]
+                PVs.append(np.sum(discounted_CFs))
+            
+                # every period there happens a shift in CFs: they become closer to the current date
+                # Therefore, they should shift 1 period
+                if current_period != period // periodicity_of_CF_shift:
+                    
+                    # update current period
+                    current_period = period // periodicity_of_CF_shift
+                    
+                    # the year has changed => CFs should shift
+                    CFs = CFs.shift(-1).fillna(0)
+                    
+            # Step 4. Save the results
+            retirement_bond_p.loc[:,simulation_number] = PVs
+            self.retirement_bond_p1 = retirement_bond_p
+
+
+
+    def calculate_perfect_retirement_bond2(self, client):
+        """
+        Optimized function to calculate the price of the perfect retirement bond 
+        given the market conditions with parallel computation for simulations.
+        The calculations for each simulation are performed in parallel for better performance.
+        """
+    
+        # Initialize an empty DataFrame to store the results (retirement bond prices) for each simulation
+        retirement_bond_p = pd.DataFrame(index=self.r_p.index)
+        
+        # This function handles the processing of one simulation at a time
+        def process_simulation(simulation_number):
+            """
+            Processes a single simulation to calculate the present value (PV) of the retirement bond.
+            The cash flows are discounted using the zero-coupon bond prices, which are calculated using
+            the simulated short-term interest rates (r_p) for each period in the simulation.
+    
+            Parameters:
+            simulation_number (int): The column index of the simulation to process.
+            
+            Returns:
+            PVs (list): A list of the present values of the cash flows for the given simulation.
+            """
+            
+            # Step 1: Initialization
+            # CFs holds the client's cash flows dataframe. This will be used to calculate the discounted cash flows.
+            CFs = client.cash_flows_df
+            
+            # r_p_short_term contains the simulated short-term interest rates for the current simulation
+            r_p_short_term = self.r_p.loc[:, simulation_number]
+            
+            # periodicity_of_CF_shift is used to determine how often to shift the cash flows
+            periodicity_of_CF_shift = 1 / client.periodicity
+    
+            # Step 2: ZC (Zero-Coupon) Bond Matrix Calculation
+            # We calculate the zero-coupon bond prices for all periods (tau) for the current simulation.
+            # These bond prices are calculated using the simulated short-term interest rates (r_p_short_term).
+            zc_bond_prices_dict = {
+                period: self.vasicek_zcb_price(r_p_short_term, tau=period) 
+                for period in CFs.index
+            }
+            
+            # Convert the dictionary of bond prices to a DataFrame for easy access
+            zc_bond_prices = pd.DataFrame.from_dict(zc_bond_prices_dict, orient='index').T
+    
+            # Step 3: Calculate Present Value (PV) of Client's Cash Flows
+            # PVs will hold the present values of all cash flows for the current simulation
+            PVs = []
+            current_period = 0
+            
+            # We loop over each period in the bond prices and calculate the discounted value of the cash flows
+            for period in zc_bond_prices.index:
+                # Discount the cash flows using the corresponding zero-coupon bond prices for the current period
+                discounted_CFs = CFs['Pure_Cash_Flow'] * zc_bond_prices.loc[period, :]
+                
+                # Sum the discounted cash flows to get the total present value for this period
+                PVs.append(np.sum(discounted_CFs))
+        
+                # Shift the cash flows for the next period, if necessary (every year based on periodicity)
+                if current_period != period // periodicity_of_CF_shift:
+                    current_period = period // periodicity_of_CF_shift
+                    CFs = CFs.shift(-1).fillna(0)  # Shift cash flows for the next period
+    
+            # Return the list of present values for this simulation
+            return PVs
+    
+        # Step 4: Parallelizing the Loop over All Simulations
+        # Use joblib's Parallel and delayed functions to process all simulations in parallel
+        # n_jobs=-1 uses all available CPU cores for parallel processing
+        result = Parallel(n_jobs=-1)(delayed(process_simulation)(sim_num) for sim_num in tqdm(self.r_p.columns, desc="Simulating scenarios"))
+        
+        # Step 5: Save the Results
+        # After all simulations are processed, we store the results in the DataFrame `retirement_bond_p`
+        # Each column corresponds to a simulation, and each row corresponds to a period.
+        for i, simulation_number in enumerate(self.r_p.columns):
+            retirement_bond_p.loc[:, simulation_number] = result[i]
+        
+        # Save the final DataFrame with all simulation results
+        self.retirement_bond_p2 = retirement_bond_p
+
+
+    def plot_market_simulation(self):
+        """
+        This function plots the stock price, intereset rate,
+        Stock volatility and stock sharpe ratio
+        """
+        fig, axes = plt.subplots(3, 2, figsize=(12, 10))
+
+        # --- (1) Heston Model log of Asset Prices ---
+        axes[0, 0].plot(self.S_p.index, np.log(self.S_p), alpha=0.6)
+        axes[0, 0].set_title("Heston Model Log of Asset Prices")
+        axes[0, 0].set_xlabel("Time")
+        axes[0, 0].set_ylabel("Log-Price Level")
+        axes[0, 0].grid(True)
+        
+        # --- (2) Heston Model Variance Process ---
+        axes[1, 0].plot(self.v_p.index, self.v_p, alpha=0.6)
+        axes[1, 0].set_title("Heston Model Variance Process")
+        axes[1, 0].set_xlabel("Time")
+        axes[1, 0].set_ylabel("Variance")
+        axes[1, 0].grid(True)
+        
+        # --- (3) Sharpe Ratio Process ---
+        axes[0, 1].plot(self.sr_p.index, self.sr_p, alpha=0.6)
+        axes[0, 1].set_title("Sharpe Ratio Process")
+        axes[0, 1].set_xlabel("Time")
+        axes[0, 1].set_ylabel("Sharpe Ratio")
+        axes[0, 1].grid(True)
+        
+        # --- (4) Vasicek Process (Interest Rate) ---
+        axes[1, 1].plot(self.r_p.index, self.r_p, alpha=0.6)
+        axes[1, 1].set_title("Vasicek Process short term rate")
+        axes[1, 1].set_xlabel("Time")
+        axes[1, 1].set_ylabel("Interest Rate")
+        axes[1, 1].grid(True)
+        
+        # --- (5) Constant Maturity Bond Index ---
+        axes[2, 0].plot(self.B_p.index, self.B_p, alpha=0.6)
+        axes[2, 0].set_title(f"Constant Maturity {self.tau} years Bond Index")
+        axes[2, 0].set_xlabel("Time")
+        axes[2, 0].set_ylabel("Price")
+        axes[2, 0].grid(True)
+
+        # --- (6) Retirement Bond ---
+        axes[2, 1].plot(self.retirement_bond_p2.index, self.retirement_bond_p2, alpha=0.6)
+        axes[2, 1].set_title(f"Perfect Retirement Bond Index")
+        axes[2, 1].set_xlabel("Time")
+        axes[2, 1].set_ylabel("Price")
+        axes[2, 1].grid(True)
+                
+        plt.tight_layout()
+
+class RetirementClient:
+    def __init__(self,
+                 name,
+                 accumulation_years=10,
+                 accumulation_cash_flow=0,
+                 decumulation_years=20,
+                 decumulation_cash_flow=50000,
+                 periodicity = 12
+                ):
+        """
+        Initializes a RetirementClient with given parameters.
+
+        :param name: Name of the client
+        :param accumulation_years: Number of years the client is saving money
+        :param accumulation_cash_flow: Annual contribution during accumulation phase (per trading day)
+        :param decumulation_years: Number of years the client is withdrawing money
+        :param decumulation_cash_flow: Annual withdrawal amount during decumulation phase (only at start of each year)
+        :param periodicity: Number of periods in a year
+        """
+        self.name = name
+        self.accumulation_years = accumulation_years
+        self.accumulation_cash_flow = accumulation_cash_flow
+        self.decumulation_years = decumulation_years
+        self.decumulation_cash_flow = decumulation_cash_flow
+        self.periodicity = periodicity
+        self.generate_cash_flows()
+        
+    def generate_cash_flows(self):
+        """
+        Generates a DataFrame of cash flows at a daily trading frequency (1/252 increments).
+        
+        - Accumulation period (X years, X*periodicity periods): Cash flow appears at period 1 of each year.
+        - Decumulation period (Y years, Y*periodicity periodss): Cash flow appears at period 1 of each year.
+
+        :return: pandas DataFrame with the following columns:
+            - 'Period': The time index in trading days (1/252 increments)
+            - 'Year': The corresponding year number
+            - 'Pure_Cash_Flow': The nominal cash flows (without inflation adjustments)
+        """
+        total_periods = (self.accumulation_years + self.decumulation_years) * self.periodicity  # Total periods
+        periods = np.arange(1, total_periods + 1)  # period index
+        
+        # Initialize cash flow array with zeros
+        cash_flows = np.zeros(total_periods)
+        
+        # Set cash flow at the beginning of each year during decumulation
+        for year in range(self.accumulation_years, self.accumulation_years + self.decumulation_years):
+            cash_flows[year * self.periodicity] = self.decumulation_cash_flow
+        
+        # Convert to DataFrame
+        self.cash_flows_df = pd.DataFrame({
+            'Period': periods / self.periodicity, 
+            'Year': (periods // self.periodicity) + 1,
+            'Pure_Cash_Flow': cash_flows
+            })
+        self.cash_flows_df.index = self.cash_flows_df.Period
+
+    def plot_cash_flows(self):
+        """
+        Plots the cash flow over the trading years.
+        """
+        plt.figure(figsize=(12, 5))
+        plt.bar(self.cash_flows_df['Period'], self.cash_flows_df['Pure_Cash_Flow'], 
+                color='darkblue', edgecolor='white', width=0.1)
+        plt.xlabel("Time (Trading Years)")
+        plt.ylabel("Cash Flow")
+        plt.title(f"Cash Flow Projection for {self.name}")
+        plt.axhline(0, color='black', linewidth=1)
+        plt.show()
