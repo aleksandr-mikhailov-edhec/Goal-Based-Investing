@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from joblib import Parallel, delayed
+import matplotlib.pyplot as plt
 
 class MarketSimulator:
     def __init__(
@@ -84,8 +85,8 @@ class MarketSimulator:
 
         # set the retirement bond price to nothing. To initialize it run "self.calculate_perfect_retirement_bond(client)"
         # where client comes from 'RetirementClient' class
-        self.retirement_bond_p2 = pd.DataFrame(index = self.r_p.index)
-        
+        self.retirement_bond_p = pd.DataFrame(index = self.r_p.index)
+  
     def generate_paths(self):
         """Simulates multiple paths of stock price, variance, Sharpe ratio, and short rate."""
         np.random.seed(self.seed)  # Set random seed for reproducibility
@@ -124,10 +125,10 @@ class MarketSimulator:
         
         # Convert outputs to DataFrame with time index
 
-        self.S_p = pd.DataFrame(S, index=np.linspace(0, self.T, len(S)))
-        self.v_p = pd.DataFrame(v, index=np.linspace(0, self.T, len(S)))
-        self.sr_p = pd.DataFrame(sr, index=np.linspace(0, self.T, len(S)))
-        self.r_p = pd.DataFrame(r, index=np.linspace(0, self.T, len(S)))
+        self.S_p = pd.DataFrame(S, index=np.arange(0, self.T+self.dt-1e-10, self.dt))
+        self.v_p = pd.DataFrame(v, index=np.arange(0, self.T+self.dt-1e-10, self.dt))
+        self.sr_p = pd.DataFrame(sr, index=np.arange(0, self.T+self.dt-1e-10, self.dt))
+        self.r_p = pd.DataFrame(r, index=np.arange(0, self.T+self.dt-1e-10, self.dt))
 
     def vasicek_zcb_price(self, r_t, tau):
         """
@@ -201,13 +202,11 @@ class MarketSimulator:
     
         return bond_index
 
-    
 
-    def calculate_perfect_retirement_bond1(self, 
-                                          client):
+    def calculate_perfect_retirement_bond(self, client):
         """
         This function calculates price of the perfect retirement bond 
-        given the market conditions.
+        given the market conditions. This function uses parallel computing
 
         Essentially it calculates zc bond matrix for each scenario and 
         finds present value of the cash flows. these PVs are the perfect
@@ -222,65 +221,7 @@ class MarketSimulator:
 
         Returns:
         df_pv_retirement_bonds (DataFrame): retirement bond price
-        
-        """
 
-        retirement_bond_p = pd.DataFrame(index = self.r_p.index)
-                              
-        for simulation_number in tqdm(self.r_p.columns):
-            
-            # Step 1. Initialization
-            # initialize CFs. It is crucial to do in in-cycle, because this df will be changed
-            CFs = client.cash_flows_df
-            # simulated short term rates for 1 scenario for the market
-            r_p_short_term = self.r_p.loc[:,simulation_number]
-            # this periodicity will be used to shift CFs (to calculate present values)
-            periodicity_of_CF_shift = 1 / client.periodicity
-        
-            # Step 2. ZC matrix
-            # calculate matrix of zc bond prices for all maturities and all effective dates
-            # it is calculated using simulated short term rates and vasicek zc bond price
-            zc_bond_prices_dict = {}
-            for period in CFs.index:
-                zc_bond_prices_dict[period] = self.vasicek_zcb_price(r_p_short_term, tau=period)
-            zc_bond_prices = pd.DataFrame.from_dict(zc_bond_prices_dict, orient='index').T
-        
-        
-            # Step 3. Find all PVs of the client cash flows
-            # The task is to gather PVs of the future cash flows at each period of time
-            # This is a price of perfect GHP, maurity bond
-            
-            PVs = []
-            current_period = 0
-            
-            # to find these PVs I would need to iterate through each effective date as if I was there
-            for period in zc_bond_prices.index:
-            
-                # for each of the dates I find the PV of those future CFs using the constructed table
-                discounted_CFs = CFs['Pure_Cash_Flow'] * zc_bond_prices.loc[period,:]
-                PVs.append(np.sum(discounted_CFs))
-            
-                # every period there happens a shift in CFs: they become closer to the current date
-                # Therefore, they should shift 1 period
-                if current_period != period // periodicity_of_CF_shift:
-                    
-                    # update current period
-                    current_period = period // periodicity_of_CF_shift
-                    
-                    # the year has changed => CFs should shift
-                    CFs = CFs.shift(-1).fillna(0)
-                    
-            # Step 4. Save the results
-            retirement_bond_p.loc[:,simulation_number] = PVs
-            self.retirement_bond_p1 = retirement_bond_p
-
-
-
-    def calculate_perfect_retirement_bond2(self, client):
-        """
-        Optimized function to calculate the price of the perfect retirement bond 
-        given the market conditions with parallel computation for simulations.
-        The calculations for each simulation are performed in parallel for better performance.
         """
     
         # Initialize an empty DataFrame to store the results (retirement bond prices) for each simulation
@@ -354,8 +295,7 @@ class MarketSimulator:
             retirement_bond_p.loc[:, simulation_number] = result[i]
         
         # Save the final DataFrame with all simulation results
-        self.retirement_bond_p2 = retirement_bond_p
-
+        self.retirement_bond_p = retirement_bond_p
 
     def plot_market_simulation(self):
         """
@@ -400,80 +340,10 @@ class MarketSimulator:
         axes[2, 0].grid(True)
 
         # --- (6) Retirement Bond ---
-        axes[2, 1].plot(self.retirement_bond_p2.index, self.retirement_bond_p2, alpha=0.6)
+        axes[2, 1].plot(self.retirement_bond_p.index, self.retirement_bond_p, alpha=0.6)
         axes[2, 1].set_title(f"Perfect Retirement Bond Index")
         axes[2, 1].set_xlabel("Time")
         axes[2, 1].set_ylabel("Price")
         axes[2, 1].grid(True)
                 
         plt.tight_layout()
-
-class RetirementClient:
-    def __init__(self,
-                 name,
-                 accumulation_years=10,
-                 accumulation_cash_flow=0,
-                 decumulation_years=20,
-                 decumulation_cash_flow=50000,
-                 periodicity = 12
-                ):
-        """
-        Initializes a RetirementClient with given parameters.
-
-        :param name: Name of the client
-        :param accumulation_years: Number of years the client is saving money
-        :param accumulation_cash_flow: Annual contribution during accumulation phase (per trading day)
-        :param decumulation_years: Number of years the client is withdrawing money
-        :param decumulation_cash_flow: Annual withdrawal amount during decumulation phase (only at start of each year)
-        :param periodicity: Number of periods in a year
-        """
-        self.name = name
-        self.accumulation_years = accumulation_years
-        self.accumulation_cash_flow = accumulation_cash_flow
-        self.decumulation_years = decumulation_years
-        self.decumulation_cash_flow = decumulation_cash_flow
-        self.periodicity = periodicity
-        self.generate_cash_flows()
-        
-    def generate_cash_flows(self):
-        """
-        Generates a DataFrame of cash flows at a daily trading frequency (1/252 increments).
-        
-        - Accumulation period (X years, X*periodicity periods): Cash flow appears at period 1 of each year.
-        - Decumulation period (Y years, Y*periodicity periodss): Cash flow appears at period 1 of each year.
-
-        :return: pandas DataFrame with the following columns:
-            - 'Period': The time index in trading days (1/252 increments)
-            - 'Year': The corresponding year number
-            - 'Pure_Cash_Flow': The nominal cash flows (without inflation adjustments)
-        """
-        total_periods = (self.accumulation_years + self.decumulation_years) * self.periodicity  # Total periods
-        periods = np.arange(1, total_periods + 1)  # period index
-        
-        # Initialize cash flow array with zeros
-        cash_flows = np.zeros(total_periods)
-        
-        # Set cash flow at the beginning of each year during decumulation
-        for year in range(self.accumulation_years, self.accumulation_years + self.decumulation_years):
-            cash_flows[year * self.periodicity] = self.decumulation_cash_flow
-        
-        # Convert to DataFrame
-        self.cash_flows_df = pd.DataFrame({
-            'Period': periods / self.periodicity, 
-            'Year': (periods // self.periodicity) + 1,
-            'Pure_Cash_Flow': cash_flows
-            })
-        self.cash_flows_df.index = self.cash_flows_df.Period
-
-    def plot_cash_flows(self):
-        """
-        Plots the cash flow over the trading years.
-        """
-        plt.figure(figsize=(12, 5))
-        plt.bar(self.cash_flows_df['Period'], self.cash_flows_df['Pure_Cash_Flow'], 
-                color='darkblue', edgecolor='white', width=0.1)
-        plt.xlabel("Time (Trading Years)")
-        plt.ylabel("Cash Flow")
-        plt.title(f"Cash Flow Projection for {self.name}")
-        plt.axhline(0, color='black', linewidth=1)
-        plt.show()
