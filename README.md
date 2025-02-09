@@ -24,3 +24,21 @@ Notebooks that start with "1" are about stochastic scenarious
 Notebooks that start with 2 are about historical scenarious
 
 Notebooks that start with 3 are about simulation of the whole retirement system
+
+
+**More global view**
+The retirement problem can be solved on 3 levels: 
+- individual
+- society
+- inttergenerational
+
+The most flexible solution is the first one. How to use financial instruments and budget planning to help individual save enough money for retirement (and other big purchases). This is a problem every single one of us will go through eventually unless government solves that problem for them. I would suggest to not hope that government will help and take fate in your own hands.
+
+Global solution for individual will look like:
+- Step 1. Understanding your current wealth, fixed and variable monthly expenses. Keep track of them from now on.
+- Step 2. Minimising unnesessary spendings. Limit your consumption today to save more. It is easy to reduce it when you see what you spend your money on.
+- Step 3. Save. Have a good savings ratio (10%-15%-30% of your income). Though savings cannot be done by putting money under pillow. Inflation will eat them. They have to be invested. How to invest - Goal Based Investing is the answer.
+
+Additional considerations:
+Your basis consumption should cover health: sports, doctors, mental health, good food. Also it should cover a place to live in (rent or mortgage). Finally, it should give enough space to live a good life: hobbies, restaurants etc. The aim of the project is to make yourself happier, not make yourself just survive.
+Obviously there are levels of income that do not allow to satisfy even basic needs, no room to talk about savings. This is out of my current scope, but maybe will be on it when I solve the savings problem. Also, another threat to the savings is governmental turmoil. For instance, inflation of 2000% will erode any income. This should be solved as a part of the problem. Also, I cannot sujjest people invest in bonds that are likely to default or invest in stocks of the country that will nationalize stocks.
