@@ -14,10 +14,10 @@ class MarketSimulator:
         seed=123, # Random seed for reproducibility
         
         # Initial conditions
-        S0=1,         # Initial stock price
-        r0=0.15 / 100,      # Initial short rate
-        sr0=0.4,      # Initial Sharpe ratio
-        v0=(0.2138)**2, # Initial variance (square of initial volatility)
+        S0=1,          # Initial stock price
+        r0=0.0306,     # Initial short rate
+        sr0=0.4,       # Initial Sharpe ratio
+        v0=(0.2138)**2,# Initial variance (square of initial volatility)
         
         # Short-rate (Vasicek) model parameters
         lt_r=0.0306,    # Long-term mean (b in Vasicek) to which r reverts
@@ -38,7 +38,7 @@ class MarketSimulator:
         # Correlations for covariance matrix
         # (Z is 4D, representing Brownian increments for: stock, variance, Sharpe ratio, short rate)
         rho_stock_volatility=-0.767, # Corr( dW_stock, dW_vol ) 
-        rho_stock_sr=-0.2,           # Corr( dW_stock, dW_sr   )
+        rho_stock_sr=-1,             # Corr( dW_stock, dW_sr   )
         rho_volatility_sr=+0.767,    # Corr( dW_vol,   dW_sr   )
 
         # Constant maturity bond index set up
@@ -113,7 +113,7 @@ class MarketSimulator:
         for i in range(1, self.N+1):
             # Stock price evolution using exponential Euler scheme
             S[i] = S[i-1] * np.exp((r[i-1] + sr[i-1] * np.sqrt(v[i-1]) - 0.5 * v[i-1]) * self.dt + np.sqrt(v[i-1] * self.dt) * Z[i-1,:,0])
-            
+
             # Variance follows a mean-reverting Heston-like process
             v[i] = np.maximum(v[i-1] + self.kappa_variance * (self.lt_variance - v[i-1]) * self.dt + self.sigma_variance * np.sqrt(v[i-1]) * np.sqrt(self.dt) * Z[i-1,:,1], 0)
             
@@ -305,42 +305,42 @@ class MarketSimulator:
         fig, axes = plt.subplots(3, 2, figsize=(12, 10))
 
         # --- (1) Heston Model log of Asset Prices ---
-        axes[0, 0].plot(self.S_p.index, np.log(self.S_p), alpha=0.6)
+        axes[0, 0].plot(self.S_p.index, np.log(self.S_p), alpha=0.6, linewidth = 1)
         axes[0, 0].set_title("Heston Model Log of Asset Prices")
         axes[0, 0].set_xlabel("Time")
         axes[0, 0].set_ylabel("Log-Price Level")
         axes[0, 0].grid(True)
         
         # --- (2) Heston Model Variance Process ---
-        axes[1, 0].plot(self.v_p.index, self.v_p, alpha=0.6)
+        axes[1, 0].plot(self.v_p.index, self.v_p, alpha=0.6, linewidth = 1)
         axes[1, 0].set_title("Heston Model Variance Process")
         axes[1, 0].set_xlabel("Time")
         axes[1, 0].set_ylabel("Variance")
         axes[1, 0].grid(True)
         
         # --- (3) Sharpe Ratio Process ---
-        axes[0, 1].plot(self.sr_p.index, self.sr_p, alpha=0.6)
+        axes[0, 1].plot(self.sr_p.index, self.sr_p, alpha=0.6, linewidth = 1)
         axes[0, 1].set_title("Sharpe Ratio Process")
         axes[0, 1].set_xlabel("Time")
         axes[0, 1].set_ylabel("Sharpe Ratio")
         axes[0, 1].grid(True)
         
         # --- (4) Vasicek Process (Interest Rate) ---
-        axes[1, 1].plot(self.r_p.index, self.r_p, alpha=0.6)
+        axes[1, 1].plot(self.r_p.index, self.r_p, alpha=0.6, linewidth = 1)
         axes[1, 1].set_title("Vasicek Process short term rate")
         axes[1, 1].set_xlabel("Time")
         axes[1, 1].set_ylabel("Interest Rate")
         axes[1, 1].grid(True)
         
         # --- (5) Constant Maturity Bond Index ---
-        axes[2, 0].plot(self.B_p.index, self.B_p, alpha=0.6)
+        axes[2, 0].plot(self.B_p.index, self.B_p, alpha=0.6, linewidth = 1)
         axes[2, 0].set_title(f"Constant Maturity {self.tau} years Bond Index")
         axes[2, 0].set_xlabel("Time")
         axes[2, 0].set_ylabel("Price")
         axes[2, 0].grid(True)
 
         # --- (6) Retirement Bond ---
-        axes[2, 1].plot(self.retirement_bond_p.index, self.retirement_bond_p, alpha=0.6)
+        axes[2, 1].plot(self.retirement_bond_p.index, self.retirement_bond_p, alpha=0.6, linewidth = 1)
         axes[2, 1].set_title(f"Perfect Retirement Bond Index")
         axes[2, 1].set_xlabel("Time")
         axes[2, 1].set_ylabel("Price")
