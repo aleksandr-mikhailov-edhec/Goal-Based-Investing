@@ -23,7 +23,7 @@ class MarketSimulator:
         lt_r=0.0306,    # Long-term mean (b in Vasicek) to which r reverts
         kappa_r=0.13,   # Mean-reversion speed for short rate
         sigma_r=0.98/100, # Volatility (std dev) of short rate’s diffusion
-        lambda_r=-53/100/100, # Market price of risk associated with interest rate movements
+        lambda_r=-0.53, # Market price of risk associated with interest rate movements
         
         # Sharpe-ratio (Ornstein–Uhlenbeck type) model parameters
         lt_sr=0.4,     # Long-term mean Sharpe ratio
@@ -69,7 +69,7 @@ class MarketSimulator:
         self.dt = T / N  # Compute dt from total time and number of steps
         
         # Set up risk-neutral under Q measure long-term short rate
-        self.lt_r_q = lt_r + sigma_r * lambda_r / kappa_r  # Adjusted long-term mean for risk-neutral valuation
+        self.lt_r_q = lt_r - sigma_r * lambda_r / kappa_r  # Adjusted long-term mean for risk-neutral valuation
 
         # generate the market paths
         self.generate_paths()
