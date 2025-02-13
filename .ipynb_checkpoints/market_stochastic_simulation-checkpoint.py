@@ -69,7 +69,7 @@ class MarketSimulator:
         self.dt = T / N  # Compute dt from total time and number of steps
         
         # Set up risk-neutral under Q measure long-term short rate
-        self.lt_r_q = lt_r - sigma_r * lambda_r / kappa_r  # Adjusted long-term mean for risk-neutral valuation
+        self.lt_r_q = lt_r + sigma_r * lambda_r / kappa_r  # Adjusted long-term mean for risk-neutral valuation
 
         # generate the market paths
         self.generate_paths()
