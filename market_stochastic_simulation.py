@@ -69,7 +69,7 @@ class MarketSimulator:
         self.dt = T / N  # Compute dt from total time and number of steps
         
         # Set up risk-neutral under Q measure long-term short rate
-        self.lt_r_q = lt_r + sigma_r * lambda_r / kappa_r  # Adjusted long-term mean for risk-neutral valuation
+        self.lt_r_q = lt_r - sigma_r * lambda_r / kappa_r  # Adjusted long-term mean for risk-neutral valuation
 
         # generate the market paths
         self.generate_paths()
@@ -121,7 +121,7 @@ class MarketSimulator:
             sr[i] = sr[i-1] + self.kappa_sr * (self.lt_sr - sr[i-1]) * self.dt + self.sigma_sr * np.sqrt(self.dt) * Z[i-1,:,2]
             
             # Short rate follows a Vasicek model under the risk-neutral measure
-            r[i] = r[i-1] + self.kappa_r * (self.lt_r_q - r[i-1]) * self.dt + self.sigma_r * np.sqrt(self.dt) * Z[i-1,:,3]
+            r[i] = r[i-1] + self.kappa_r * (self.lt_r - r[i-1]) * self.dt + self.sigma_r * np.sqrt(self.dt) * Z[i-1,:,3]
         
         # Convert outputs to DataFrame with time index
 
