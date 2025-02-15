@@ -85,7 +85,8 @@ class MarketSimulator:
 
         # set the retirement bond price to nothing. To initialize it run "self.calculate_perfect_retirement_bond(client)"
         # where client comes from 'RetirementClient' class
-        self.retirement_bond_p = pd.DataFrame(index = self.r_p.index)
+        self.retirement_bond_essential_p = pd.DataFrame(index = self.r_p.index)
+        self.retirement_bond_aspirational_p = pd.DataFrame(index = self.r_p.index)
   
     def generate_paths(self):
         """Simulates multiple paths of stock price, variance, Sharpe ratio, and short rate."""
@@ -220,12 +221,13 @@ class MarketSimulator:
                         ### IMPORTANT ### Higher periodicity makes this code slower,
 
         Returns:
-        df_pv_retirement_bonds (DataFrame): retirement bond price
+        df_pv_retirement_bonds (DataFrame): retirement bond price (adjusted to be 1 at day 1)
 
         """
     
         # Initialize an empty DataFrame to store the results (retirement bond prices) for each simulation
-        retirement_bond_p = pd.DataFrame(index=self.r_p.index)
+        retirement_bond_essential_p = pd.DataFrame(index=self.r_p.index)
+        retirement_bond_aspirational_p = pd.DataFrame(index=self.r_p.index)
         
         # This function handles the processing of one simulation at a time
         def process_simulation(simulation_number):
@@ -264,16 +266,19 @@ class MarketSimulator:
     
             # Step 3: Calculate Present Value (PV) of Client's Cash Flows
             # PVs will hold the present values of all cash flows for the current simulation
-            PVs = []
+            PVs_essential = []
+            PVs_aspirational = []
             current_period = 0
             
             # We loop over each period in the bond prices and calculate the discounted value of the cash flows
             for period in zc_bond_prices.index:
                 # Discount the cash flows using the corresponding zero-coupon bond prices for the current period
-                discounted_CFs = CFs['Pure_Cash_Flow'] * zc_bond_prices.loc[period, :]
+                discounted_CFs_essential = CFs['Pure_Essential_Goal_Cash_Flow'] * zc_bond_prices.loc[period, :]
+                discounted_CFs_aspirational = CFs['Pure_Aspirational_Goal_Cash_Flow'] * zc_bond_prices.loc[period, :]
                 
                 # Sum the discounted cash flows to get the total present value for this period
-                PVs.append(np.sum(discounted_CFs))
+                PVs_essential.append(np.sum(discounted_CFs_essential))
+                PVs_aspirational.append(np.sum(discounted_CFs_aspirational))
         
                 # Shift the cash flows for the next period, if necessary (every year based on periodicity)
                 if current_period != period // periodicity_of_CF_shift:
@@ -281,21 +286,28 @@ class MarketSimulator:
                     CFs = CFs.shift(-1).fillna(0)  # Shift cash flows for the next period
     
             # Return the list of present values for this simulation
-            return PVs
-    
+            return PVs_essential, PVs_aspirational
+
         # Step 4: Parallelizing the Loop over All Simulations
         # Use joblib's Parallel and delayed functions to process all simulations in parallel
         # n_jobs=-1 uses all available CPU cores for parallel processing
-        result = Parallel(n_jobs=-1)(delayed(process_simulation)(sim_num) for sim_num in tqdm(self.r_p.columns, desc="Simulating scenarios"))
-        
+        results = Parallel(n_jobs=-1)(
+        delayed(process_simulation)(sim_num) for sim_num in tqdm(self.r_p.columns, desc="Simulating scenarios")
+        )
+
+        # Unpack the results separately
+        result_essential, result_aspirational = zip(*results)
+
         # Step 5: Save the Results
         # After all simulations are processed, we store the results in the DataFrame `retirement_bond_p`
         # Each column corresponds to a simulation, and each row corresponds to a period.
         for i, simulation_number in enumerate(self.r_p.columns):
-            retirement_bond_p.loc[:, simulation_number] = result[i]
-        
+            retirement_bond_essential_p.loc[:, simulation_number] = result_essential[i]
+            retirement_bond_aspirational_p.loc[:, simulation_number] = result_aspirational[i]
+
         # Save the final DataFrame with all simulation results
-        self.retirement_bond_p = retirement_bond_p
+        self.retirement_bond_essential_p = retirement_bond_essential_p
+        self.retirement_bond_aspirational_p = retirement_bond_aspirational_p
 
     def plot_market_simulation(self):
         """
@@ -340,8 +352,8 @@ class MarketSimulator:
         axes[2, 0].grid(True)
 
         # --- (6) Retirement Bond ---
-        axes[2, 1].plot(self.retirement_bond_p.index, self.retirement_bond_p, alpha=0.6, linewidth = 1)
-        axes[2, 1].set_title(f"Perfect Retirement Bond Index")
+        axes[2, 1].plot(self.retirement_bond_essential_p.index, self.retirement_bond_essential_p, alpha=0.6, linewidth = 1)
+        axes[2, 1].set_title(f"Essential Retirement Bond Index Price")
         axes[2, 1].set_xlabel("Time")
         axes[2, 1].set_ylabel("Price")
         axes[2, 1].grid(True)
