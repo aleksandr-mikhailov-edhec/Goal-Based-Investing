@@ -308,54 +308,78 @@ class MarketSimulator:
         # Save the final DataFrame with all simulation results
         self.retirement_bond_essential_p = retirement_bond_essential_p
         self.retirement_bond_aspirational_p = retirement_bond_aspirational_p
-
-    def plot_market_simulation(self):
+    def plot_market_simulation(self, background_black=True, dpi = 100):
         """
-        This function plots the stock price, intereset rate,
-        Stock volatility and stock sharpe ratio
+        This function plots the stock price, interest rate,
+        stock volatility, and stock Sharpe ratio with Matrix-style green tones.
         """
-        fig, axes = plt.subplots(3, 2, figsize=(12, 10))
+        fig, axes = plt.subplots(3, 2, figsize=(12, 10), dpi = dpi)
+        
+        # Set background color
+        if background_black:
+            fig.patch.set_facecolor('black')
+            for ax in axes.flatten():
+                ax.set_facecolor('black')
+                ax.tick_params(colors='white')
+                ax.spines['bottom'].set_color('white')
+                ax.spines['top'].set_color('white')
+                ax.spines['right'].set_color('white')
+                ax.spines['left'].set_color('white')
+                ax.title.set_color('white')
+                ax.xaxis.label.set_color('white')
+                ax.yaxis.label.set_color('white')
+        
+        # Define green shades for multiple lines using Forest Green (#228B22)
+        base_color = (34/255, 139/255, 34/255)  # RGB values of #228B22
+        alphas = [1]#np.linspace(1, 0.3, 6)  # Correct alpha levels
 
         # --- (1) Heston Model log of Asset Prices ---
-        axes[0, 0].plot(self.S_p.index, np.log(self.S_p), alpha=0.6, linewidth = 1)
+        for i, alpha in enumerate(alphas):
+            axes[0, 0].plot(self.S_p.index, np.log(self.S_p[i::len(alphas)]), alpha=alpha, linewidth = 1)
         axes[0, 0].set_title("Heston Model Log of Asset Prices")
         axes[0, 0].set_xlabel("Time")
         axes[0, 0].set_ylabel("Log-Price Level")
-        axes[0, 0].grid(True)
+        axes[0, 0].grid(True, linestyle='dotted', color='gray')
         
         # --- (2) Heston Model Variance Process ---
-        axes[1, 0].plot(self.v_p.index, self.v_p, alpha=0.6, linewidth = 1)
+        for i, alpha in enumerate(alphas):
+            axes[1, 0].plot(self.v_p.index, self.v_p[i::len(alphas)], alpha=alpha, linewidth = 1)
         axes[1, 0].set_title("Heston Model Variance Process")
         axes[1, 0].set_xlabel("Time")
         axes[1, 0].set_ylabel("Variance")
-        axes[1, 0].grid(True)
+        axes[1, 0].grid(True, linestyle='dotted', color='gray')
         
         # --- (3) Sharpe Ratio Process ---
-        axes[0, 1].plot(self.sr_p.index, self.sr_p, alpha=0.6, linewidth = 1)
+        for i, alpha in enumerate(alphas):
+            axes[0, 1].plot(self.sr_p.index, self.sr_p[i::len(alphas)], alpha=alpha, linewidth = 1)
         axes[0, 1].set_title("Sharpe Ratio Process")
         axes[0, 1].set_xlabel("Time")
         axes[0, 1].set_ylabel("Sharpe Ratio")
-        axes[0, 1].grid(True)
+        axes[0, 1].grid(True, linestyle='dotted', color='gray')
         
         # --- (4) Vasicek Process (Interest Rate) ---
-        axes[1, 1].plot(self.r_p.index, self.r_p, alpha=0.6, linewidth = 1)
-        axes[1, 1].set_title("Vasicek Process short term rate")
+        for i, alpha in enumerate(alphas):
+            axes[1, 1].plot(self.r_p.index, self.r_p[i::len(alphas)], alpha=alpha,linewidth = 1)
+        axes[1, 1].set_title("Vasicek Process Short Term Rate")
         axes[1, 1].set_xlabel("Time")
         axes[1, 1].set_ylabel("Interest Rate")
-        axes[1, 1].grid(True)
+        axes[1, 1].grid(True, linestyle='dotted', color='gray')
         
         # --- (5) Constant Maturity Bond Index ---
-        axes[2, 0].plot(self.B_p.index, self.B_p, alpha=0.6, linewidth = 1)
+        for i, alpha in enumerate(alphas):
+            axes[2, 0].plot(self.B_p.index, self.B_p[i::len(alphas)], alpha=alpha, linewidth = 1)
         axes[2, 0].set_title(f"Constant Maturity {self.tau} years Bond Index")
         axes[2, 0].set_xlabel("Time")
         axes[2, 0].set_ylabel("Price")
-        axes[2, 0].grid(True)
-
+        axes[2, 0].grid(True, linestyle='dotted', color='gray')
+        
         # --- (6) Retirement Bond ---
-        axes[2, 1].plot(self.retirement_bond_essential_p.index, self.retirement_bond_essential_p, alpha=0.6, linewidth = 1)
-        axes[2, 1].set_title(f"Essential Retirement Bond Index Price")
+        for i, alpha in enumerate(alphas):
+            axes[2, 1].plot(self.retirement_bond_essential_p.index, self.retirement_bond_essential_p[i::len(alphas)], alpha=alpha, linewidth = 1)
+        axes[2, 1].set_title("Essential Retirement Bond Index Price")
         axes[2, 1].set_xlabel("Time")
         axes[2, 1].set_ylabel("Price")
-        axes[2, 1].grid(True)
-                
+        axes[2, 1].grid(True, linestyle='dotted', color='gray')
+        
         plt.tight_layout()
+        plt.show()
